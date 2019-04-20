@@ -3,173 +3,114 @@
  * Web: geekytheory.com
  */
 
-const {port,ip,intervals} = require('./config.js'),
-  server = require('http').createServer(handler).listen(port, ip),
-  io = require('socket.io').listen(server),
-  fs = require('fs'),
-  exec = require('child_process').exec;
-  //sys = require('util'),
-  //child, child1;
+const { port, ip, intervals } = require("./config.js"),
+  { serverHandler, execHandler, errorHandler } = require("./utils"),
+  server = require("http")
+    .createServer(serverHandler)
+    .listen(port, ip),
+  io = require("socket.io").listen(server);
 
-  
 var connectCounter = 0;
 
-//Si todo va bien al abrir el navegador, cargaremos el archivo index.html
-function handler(req, res) {
-	fs.readFile(__dirname+'/index.html', function(err, data) {
-		if (err) {
-      //Si hay error, mandaremos un mensaje de error 500
-			console.log(err);
-			res.writeHead(500);
-			res.end('Error loading index.html');
-    } else {
-      res.writeHead(200);
-      res.end(data);
-    }
-	});
-}
-
 //Cuando abramos el navegador estableceremos una conexión con socket.io.
-//Cada X segundos mandaremos a la gráfica un nuevo valor. 
-io.sockets.on('connection', function(socket) {
-  var memTotal, memUsed = 0, memFree = 0, memBuffered = 0, memCached = 0, sendData = 1, percentBuffered, percentCached, percentUsed, percentFree;
-  var address = socket.handshake.address;
+//Cada X segundos mandaremos a la gráfica un nuevo valor.
+io.sockets.on("connection", function(socket) {
+  const address = socket.handshake.address;
 
   console.log("New connection from " + address.address + ":" + address.port);
-  connectCounter++; 
-  console.log("NUMBER OF CONNECTIONS++: "+connectCounter);
-  socket.on('disconnect', function() { connectCounter--;  console.log("NUMBER OF CONNECTIONS--: "+connectCounter);});
+  connectCounter++;
+  console.log("NUMBER OF CONNECTIONS++: " + connectCounter);
+  socket.on("disconnect", function() {
+    connectCounter--;
+    console.log("NUMBER OF CONNECTIONS--: " + connectCounter);
+  });
+
+  Promise.all([
+    execHandler("egrep --color 'MemTotal' /proc/meminfo | egrep '[0-9.]{4,}' -o"), //MemTotal
+    execHandler("hostname"), //Hostname
+    execHandler("uptime | tail -n 1 | awk '{print $1}'"), //Uptime
+    execHandler("uname -r"), //Uname
+    execHandler("top -d 0.5 -b -n2 | tail -n 10 | awk '{print $12}'"), //top
+  ])
+    .then(stdouts => {
+      socket.emit("memoryTotal", stdouts[0]);
+      socket.emit("hostname", stdouts[1]);
+      socket.emit("uptime", stdouts[2]);
+      socket.emit("kernel", stdouts[3]);
+      socket.emit("toplist", stdouts[4]);
+    })
+    .catch(errorHandler);
 
   // Function for checking memory
-    exec("egrep --color 'MemTotal' /proc/meminfo | egrep '[0-9.]{4,}' -o", function (error, stdout, stderr) {
-    if (error !== null) {
-      console.log('exec error: ' + error);
-    } else {
-      memTotal = stdout;
-      socket.emit('memoryTotal', stdout); 
-    }
-  });
 
-    exec("hostname", function (error, stdout, stderr) {
-    if (error !== null) {
-      console.log('exec error: ' + error);
-    } else {
-      socket.emit('hostname', stdout); 
-    }
-  });
+  /* SETINTEVALS FUNCTIONS */
 
-    exec("uptime | tail -n 1 | awk '{print $1}'", function (error, stdout, stderr) {
-    if (error !== null) {
-      console.log('exec error: ' + error);
-    } else {
-      socket.emit('uptime', stdout); 
-    }
-  });
-
-    exec("uname -r", function (error, stdout, stderr) {
-    if (error !== null) {
-      console.log('exec error: ' + error);
-    } else {
-      socket.emit('kernel', stdout); 
-    }
-  });
-
-    exec("top -d 0.5 -b -n2 | tail -n 10 | awk '{print $12}'", function (error, stdout, stderr) {
-	    if (error !== null) {
-	      console.log('exec error: ' + error);
-	    } else {
-	      socket.emit('toplist', stdout); 
-	    }
-	  });
-    
-
-  setInterval(function(){
+  /* --- Intervals-short */
+  setInterval(function() {
     // Function for checking memory free and used
-    exec("egrep --color 'MemFree' /proc/meminfo | egrep '[0-9.]{4,}' -o", function (error, stdout, stderr) {
-    if (error == null) {
-      memFree = stdout;
-      memUsed = parseInt(memTotal)-parseInt(memFree);
-      percentUsed = Math.round(parseInt(memUsed)*100/parseInt(memTotal));
-      percentFree = 100 - percentUsed;
-    } else {
-      sendData = 0;
-      console.log('exec error: ' + error);
-    }
-  });
 
-    // Function for checking memory buffered
-    exec("egrep --color 'Buffers' /proc/meminfo | egrep '[0-9.]{4,}' -o", function (error, stdout, stderr) {
-    if (error == null) {
-      memBuffered = stdout;
-      percentBuffered = Math.round(parseInt(memBuffered)*100/parseInt(memTotal));
-    } else {
-      sendData = 0;
-      console.log('exec error: ' + error);
-    }
-  });
+    Promise.all([
+      execHandler("egrep --color 'MemFree' /proc/meminfo | egrep '[0-9.]{4,}' -o"), // Function for checking memory free and used
+      execHandler("egrep --color 'Buffers' /proc/meminfo | egrep '[0-9.]{4,}' -o"), // Function for checking memory buffered
+      execHandler("egrep --color 'Cached' /proc/meminfo | egrep '[0-9.]{4,}' -o"), // Function for checking memory buffered
+      execHandler("egrep --color 'MemTotal' /proc/meminfo | egrep '[0-9.]{4,}' -o"), //Funcion for MemoryTotal
+    ])
+      .then(stdouts => {
+        const memTotal = stdouts[3];
+        const memFree = stdouts[0];
+        const memBuffered = stdouts[1];
+        const memCached = stdouts[2];
 
-    // Function for checking memory buffered
-    exec("egrep --color 'Cached' /proc/meminfo | egrep '[0-9.]{4,}' -o", function (error, stdout, stderr) {
-    if (error == null) {
-      memCached = stdout;
-      percentCached = Math.round(parseInt(memCached)*100/parseInt(memTotal));
-    } else {
-      sendData = 0;
-      console.log('exec error: ' + error);
-    }
-  });
+        const memUsed = parseInt(memTotal, 10) - parseInt(memFree, 10);
+        const percentUsed = Math.round((parseInt(memUsed, 10) * 100) / parseInt(memTotal, 10));
+        const percentFree = 100 - percentUsed;
+        const percentBuffered = Math.round((parseInt(memBuffered, 10) * 100) / parseInt(memTotal, 10));
+        const percentCached = Math.round((parseInt(memCached, 10) * 100) / parseInt(memTotal, 10));
 
-  // Function for measuring temperature
-  exec("cat /sys/class/thermal/thermal_zone0/temp", function (error, stdout, stderr) {
-    if (error !== null) {
-      console.log('exec error: ' + error);
-    } else {
-      //Es necesario mandar el tiempo (eje X) y un valor de temperatura (eje Y).
-      var date = new Date().getTime();
-      var temp = parseFloat(stdout)/1000;
-      socket.emit('temperatureUpdate', date, temp); 
-    }
-  });
+        socket.emit("memoryUpdate", percentFree, percentUsed, percentBuffered, percentCached);
+      })
+      .catch(errorHandler);
 
-    if (sendData == 1) {
-      socket.emit('memoryUpdate', percentFree, percentUsed, percentBuffered, percentCached); 
-    } else {
-      sendData = 1;
-    }
-  },intervals.short);
-
-	// Uptime
-  setInterval(function(){
-    child = exec("uptime | tail -n 1 | awk '{print $3 $4 $5}'", function (error, stdout, stderr) {
-	    if (error !== null) {
-	      console.log('exec error: ' + error);
-	    } else {
-	      socket.emit('uptime', stdout); 
-	    }
-	  });},intervals.long);
-
-// TOP list
-  setInterval(function(){
-
-      exec("top -d 0.5 -b -n2 | grep 'Cpu(s)'|tail -n 1 | awk '{print $2 + $4}'", function (error, stdout, stderr) {
-      if (error !== null) {
-        console.log('exec error: ' + error);
-      } else {
+    // Function for measuring temperature
+    execHandler("cat /sys/class/thermal/thermal_zone0/temp")
+      .then(stdout => {
         //Es necesario mandar el tiempo (eje X) y un valor de temperatura (eje Y).
         var date = new Date().getTime();
-        socket.emit('cpuUsageUpdate', date, parseFloat(stdout)); 
-      }
-    });
+        var temp = parseFloat(stdout) / 1000;
+        socket.emit("temperatureUpdate", date, temp);
+      })
+      .catch(errorHandler);
+  }, intervals.short);
 
-      exec("ps aux --width 30 --sort -rss --no-headers | head  | awk '{print $11}'", function (error, stdout, stderr) {
-	    if (error !== null) {
-	      console.log('exec error: ' + error);
-	    } else {
-	      socket.emit('toplist', stdout); 
-	    }
-	  });},intervals.medium);
+  /* --- Intervals-medium */
+  setInterval(function() {
+    //TOP List
+    execHandler("top -d 0.5 -b -n2 | grep 'Cpu(s)'|tail -n 1 | awk '{print $2 + $4}'")
+      .then(stdout => {
+        //Es necesario mandar el tiempo (eje X) y un valor de temperatura (eje Y).
+        var date = new Date().getTime();
+        socket.emit("cpuUsageUpdate", date, parseFloat(stdout));
+      })
+      .catch(errorHandler);
+
+    //TOP List
+    execHandler("ps aux --width 30 --sort -rss --no-headers | head  | awk '{print $11}'")
+      .then(stdout => {
+        socket.emit("toplist", stdout);
+      })
+      .catch(errorHandler);
+  }, intervals.medium);
+
+  /* --- Intervals-long */
+  setInterval(function() {
+    // Uptime
+    execHandler("uptime | tail -n 1 | awk '{print $3 $4 $5}'")
+      .then(stdout => {
+        socket.emit("uptime", stdout);
+      })
+      .catch(errorHandler);
+  }, intervals.long);
 });
 
 //Escuchamos en el puerto $port
 server.listen(port);
-
